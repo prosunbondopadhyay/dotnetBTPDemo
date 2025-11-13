@@ -23,5 +23,5 @@ builder:
       configuration:
         archiveName: capdotnetui
         additionalFiles:
-          - webapp/xs-app.json
+          - xs-app.json
 
