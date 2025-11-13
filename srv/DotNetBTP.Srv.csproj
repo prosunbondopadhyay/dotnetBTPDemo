@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+  <TargetFramework>net6.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -9,5 +9,6 @@
   <ItemGroup>
     <!-- Note: Demo version uses mock data. For production HANA integration, add System.Data.Odbc or Entity Framework Core -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+    <PackageReference Include="System.Data.Odbc" Version="8.0.0" />
   </ItemGroup>
 </Project>
