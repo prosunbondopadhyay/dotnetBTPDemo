@@ -1,12 +1,21 @@
 {
   "xsappname": "dotnetbtp",
   "tenant-mode": "dedicated",
-  "oauth2-configuration": {
-    "redirect-uris": ["*"]
-  },
+
   "scopes": [
     {"name": "$XSAPPNAME.Display", "description": "Display"}
   ],
-  "authorities": []
+  "authorities": [],
+    "oauth2-configuration": {
+    "credential-types": ["binding-secret", "instance-secret"],
+    "redirect-uris": [
+      "https://*.us10-001.hana.ondemand.com/**",
+      "https://*.us10cf.trial.applicationstudio.cloud.sap/**",
+      "https://*.us10.trial.applicationstudio.cloud.sap/login/callback/**",
+      "https://*.us10.trial.applicationstudio.cloud.sap/login/callback/**",
+      "http://localhost:5000/login/callback",
+      "http://localhost:5001/"
+    ]
+  }
 }
 
