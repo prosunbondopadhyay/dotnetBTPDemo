@@ -1,0 +1,43 @@
+<mvc:View
+  controllerName="cap.dotnet.ui.controller.Main"
+  xmlns:mvc="sap.ui.core.mvc"
+  xmlns="sap.m">
+  <Page title="Products">
+    <content>
+      <VBox class="sapUiSmallMargin">
+        <HBox items="{path:'/'}" visible="false"/>
+        <Toolbar>
+          <Title text="Products"/>
+          <ToolbarSpacer/>
+          <Button text="Refresh" press="onRefresh"/>
+        </Toolbar>
+        <HBox class="sapUiSmallMarginTopBottom" renderType="Bare">
+          <Input id="nameInput" placeholder="Name" width="200px"/>
+          <Input id="priceInput" placeholder="Price" type="Number" width="120px"/>
+          <Button text="Add" type="Emphasized" press="onAdd"/>
+          <Text id="msg" class="sapUiSmallMarginBegin"/>
+        </HBox>
+        <Table id="table" items="{/}">
+          <columns>
+            <Column><Text text="ID"/></Column>
+            <Column><Text text="Name"/></Column>
+            <Column><Text text="Price"/></Column>
+            <Column hAlign="End"><Text text="Actions"/></Column>
+          </columns>
+          <items>
+            <ColumnListItem>
+              <ObjectIdentifier title="{id}"/>
+              <Input value="{name}" width="200px"/>
+              <Input value="{price}" type="Number" width="120px"/>
+              <HBox justifyContent="End">
+                <Button text="Save" type="Emphasized" press="onSave"/>
+                <Button text="Delete" type="Reject" press="onDelete"/>
+              </HBox>
+            </ColumnListItem>
+          </items>
+        </Table>
+      </VBox>
+    </content>
+  </Page>
+</mvc:View>
+

@@ -1,0 +1,6 @@
+applications:
+  - name: dotnet-srv
+    memory: 512M
+    disk_quota: 1024M
+    env:
+      ASPNETCORE_URLS: "http://0.0.0.0:${PORT}"

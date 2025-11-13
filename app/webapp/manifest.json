@@ -1,0 +1,45 @@
+{
+  "_version": "1.48.0",
+  "sap.app": {
+    "id": "cap.dotnet.ui",
+    "type": "application",
+    "title": "Products",
+    "i18n": "i18n/i18n.properties",
+    "applicationVersion": {
+      "version": "1.0.0"
+    }
+  },
+  "sap.ui5": {
+    "rootView": {
+      "viewName": "cap.dotnet.ui.view.Main",
+      "type": "XML",
+      "async": true,
+      "id": "Main"
+    },
+    "dependencies": {
+      "minUI5Version": "1.108",
+      "libs": {
+        "sap.m": {},
+        "sap.ui.core": {}
+      }
+    },
+    "contentDensities": {
+      "compact": true,
+      "cozy": true
+    },
+    "models": {
+      "": {
+        "type": "sap.ui.model.json.JSONModel"
+      }
+    },
+    "resources": {
+      "css": [
+        { "uri": "css/style.css" }
+      ]
+    }
+  }
+  ,
+  "sap.cloud": {
+    "service": "dotnetbtp.service"
+  }
+}

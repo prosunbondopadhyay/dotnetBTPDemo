@@ -1,0 +1,22 @@
+{
+  "name": "dotnet-btp-cap-sample",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CAP-style app: CDS db + .NET srv + approuter",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "cds build --production --for hana",
+    "mbt": "mbt build -p=cf -t mta_archive",
+  "deploy": "cf deploy mta_archive/DotNetBTP_1.0.0.mtar --retries 1"
+  },
+  "devDependencies": {
+    "@sap/cds-dk": "^7"
+  },
+  "dependencies": {
+    "@sap/cds": "^7"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
+

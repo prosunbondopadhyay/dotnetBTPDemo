@@ -1,0 +1,4 @@
+---
+# Pin .NET SDK/runtime version for the CF .NET buildpack
+dotnet-core:
+  sdk: 8.0
