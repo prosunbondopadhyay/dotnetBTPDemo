@@ -12,6 +12,6 @@
     "@sap/ux-ui5-tooling": "1.19.5",
     "ui5-task-zipper": "3.4.4",
     "@sap/ui5-builder-webide-extension": "1.1.9",
-    "@ui5/linter": "1.20.2"
+    "@ui5/linter": "1.20.3"
   }
 }
