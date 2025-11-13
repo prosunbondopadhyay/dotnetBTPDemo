@@ -6,7 +6,7 @@
     "start": "node node_modules/@sap/approuter/approuter.js"
   },
   "dependencies": {
-    "@sap/approuter": "^14"
+    "@sap/approuter": "^20.0.0"
   },
   "engines": {
     "node": ">=18"
