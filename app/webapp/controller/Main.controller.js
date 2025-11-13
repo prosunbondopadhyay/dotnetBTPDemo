@@ -1,7 +1,8 @@
 sap.ui.define([
   "sap/ui/core/mvc/Controller",
-  "sap/m/MessageToast"
-], function (Controller, MessageToast) {
+  "sap/m/MessageToast",
+  'sap/ui/model/json/JSONModel',
+], function (Controller, MessageToast, JSONModel) {
   "use strict";
   const API = "/api";
   async function fetchJson(url, opts) {
@@ -11,13 +12,22 @@ sap.ui.define([
   }
   return Controller.extend("cap.dotnet.ui.controller.Main", {
     onInit: function () {
+      this._model = this.getOwnerComponent().getModel();
+      if (this._model && this._model.setSizeLimit) {
+        this._model.setSizeLimit(1000);
+      }
       this.onRefresh();
     },
     onRefresh: async function () {
       try {
         const data = await fetchJson(API + "/products");
-        this.getView().getModel().setData(data);
+        const productsArray = Array.isArray(data) ? data : [];
+        // Update the existing component model (created from manifest) instead of creating a new one
+        this._model.setProperty('/products', productsArray);
+        const productsFromModel = this._model.getProperty('/products');
+        this._msg(`Loaded ${productsFromModel ? productsFromModel.length : 0} items`);
       } catch (e) {
+        console.error("Main.controller onRefresh error", e);
         this._msg(e.message);
       }
     },
@@ -63,4 +73,3 @@ sap.ui.define([
     }
   });
 });
-

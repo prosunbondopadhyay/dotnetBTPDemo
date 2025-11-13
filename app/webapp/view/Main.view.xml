@@ -4,7 +4,7 @@
   xmlns="sap.m">
   <Page title="Products">
     <content>
-      <VBox class="sapUiSmallMargin">
+      <VBox class="sapUiSmallMargin" height="100%">
         <Toolbar>
           <Title text="Products"/>
           <ToolbarSpacer/>
@@ -16,7 +16,7 @@
           <Button text="Add" type="Emphasized" press="onAdd"/>
           <Text id="msg" class="sapUiSmallMarginBegin"/>
         </HBox>
-        <Table id="table" items="{/}">
+        <Table id="table" items="{path: '/products'}" growingScrollToLoad="true" growing="true" growingThreshold="20">
           <columns>
             <Column><Text text="ID"/></Column>
             <Column><Text text="Name"/></Column>
@@ -25,13 +25,15 @@
           </columns>
           <items>
             <ColumnListItem>
-              <ObjectIdentifier title="{id}"/>
-              <Input value="{name}" width="200px"/>
-              <Input value="{price}" type="Number" width="120px"/>
-              <HBox justifyContent="End">
-                <Button text="Save" type="Emphasized" press="onSave"/>
-                <Button text="Delete" type="Reject" press="onDelete"/>
-              </HBox>
+              <cells>
+                <ObjectIdentifier title="{id}"/>
+                <Input value="{name}" width="200px"/>
+                <Input value="{price}" type="Number" width="120px"/>
+                <HBox justifyContent="End">
+                  <Button text="Save" type="Emphasized" press="onSave"/>
+                  <Button text="Delete" type="Reject" press="onDelete"/>
+                </HBox>
+              </cells>
             </ColumnListItem>
           </items>
         </Table>

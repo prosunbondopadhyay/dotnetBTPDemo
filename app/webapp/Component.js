@@ -1,14 +1,12 @@
 sap.ui.define([
-  "sap/ui/core/UIComponent",
-  "sap/ui/model/json/JSONModel"
-], function (UIComponent, JSONModel) {
+  "sap/ui/core/UIComponent"
+], function (UIComponent) {
   "use strict";
   return UIComponent.extend("cap.dotnet.ui.Component", {
     metadata: { manifest: "json" },
     init: function () {
       UIComponent.prototype.init.apply(this, arguments);
-      this.setModel(new JSONModel([]));
+      // Default model is created from manifest (sap.ui5.models)
     }
   });
 });
-
