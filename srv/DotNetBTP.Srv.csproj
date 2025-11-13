@@ -7,7 +7,7 @@
     <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Note: HANA integration uses ODBC fallback -->
+    <!-- Note: HANA integration uses System.Net.Http for direct REST queries or NGSA for queries -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
     <PackageReference Include="System.Data.Odbc" Version="8.0.0" />
   </ItemGroup>

@@ -17,6 +17,115 @@ if (!string.IsNullOrWhiteSpace(port))
     app.Urls.Add($"http://0.0.0.0:{port}");
 }
 
+// Diagnostic helper: try multiple REST endpoints and return concise results
+async Task<object> DiagnoseHanaFromApp()
+{
+    var outResults = new List<object>();
+
+    try
+    {
+        var vcap = Environment.GetEnvironmentVariable("VCAP_SERVICES");
+        if (string.IsNullOrWhiteSpace(vcap))
+        {
+            return new { error = "VCAP_SERVICES not found" };
+        }
+
+        using var doc = System.Text.Json.JsonDocument.Parse(vcap);
+        foreach (var prop in doc.RootElement.EnumerateObject())
+        {
+            if (!prop.Name.Contains("hana", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Array)
+                continue;
+
+            foreach (var item in prop.Value.EnumerateArray())
+            {
+                if (!item.TryGetProperty("credentials", out var creds)) continue;
+
+                creds.TryGetProperty("host", out var jhost);
+                creds.TryGetProperty("port", out var jport);
+                creds.TryGetProperty("user", out var juser);
+                creds.TryGetProperty("password", out var jpwd);
+
+                var host = jhost.GetString();
+                var port = jport.GetRawText().Trim('\"');
+                var user = juser.GetString();
+                var pwd = jpwd.GetString();
+
+                if (string.IsNullOrWhiteSpace(host)) continue;
+
+                var baseUrl = $"https://{host}:{(string.IsNullOrWhiteSpace(port) ? "443" : port)}";
+
+                // endpoints to try
+                var endpoints = new[]
+                {
+                    "/sap/hana/exec/query",
+                    "/sap/hana/sql",
+                    "/sap/hana/odata/v4/",
+                    "/sap/hana/query",
+                };
+
+                using var handler = new HttpClientHandler();
+                handler.ServerCertificateCustomValidationCallback = (m, c, ch, e) => true;
+                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+                var cred = Convert.ToBase64String(System.Text.Encoding.ASCII.GetBytes($"{user}:{pwd}"));
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", cred);
+
+                var sqlBody = System.Text.Json.JsonSerializer.Serialize(new { sql = "SELECT \"ID\",\"name\",\"price\",\"createdAt\" FROM \"Products\" ORDER BY \"ID\"", limit = 10000 });
+                var content = new StringContent(sqlBody, System.Text.Encoding.UTF8, "application/json");
+
+                // First, a plain GET to base root
+                try
+                {
+                    var r = await client.GetAsync(baseUrl);
+                    var body = await SafeRead(r.Content);
+                    outResults.Add(new { endpoint = baseUrl, method = "GET", status = (int)r.StatusCode, reason = r.ReasonPhrase, body = Truncate(body, 800) });
+                }
+                catch (Exception ex)
+                {
+                    outResults.Add(new { endpoint = baseUrl, method = "GET", error = ex.Message });
+                }
+
+                // Try POSTs to each candidate endpoint
+                foreach (var ep in endpoints)
+                {
+                    var url = baseUrl.TrimEnd('/') + ep;
+                    try
+                    {
+                        var r = await client.PostAsync(url, content);
+                        var body = await SafeRead(r.Content);
+                        outResults.Add(new { endpoint = url, method = "POST", status = (int)r.StatusCode, reason = r.ReasonPhrase, body = Truncate(body, 1200) });
+                    }
+                    catch (Exception ex)
+                    {
+                        outResults.Add(new { endpoint = url, method = "POST", error = ex.Message });
+                    }
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        return new { error = ex.Message };
+    }
+
+    return new { results = outResults };
+
+    static string Truncate(string? s, int len) => string.IsNullOrEmpty(s) ? "" : (s.Length <= len ? s : s.Substring(0, len));
+    static async Task<string> SafeRead(HttpContent? c)
+    {
+        try
+        {
+            if (c == null) return string.Empty;
+            return await c.ReadAsStringAsync();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+}
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -44,6 +153,13 @@ app.MapGet("/api/products/{id}", async (int id) =>
     var source = hanaProducts ?? mockProducts;
     var product = source.FirstOrDefault(p => p.Id == id);
     return product != null ? Results.Ok(product) : Results.NotFound();
+});
+
+// Diagnostic endpoint: run several HANA REST attempts from inside the app
+app.MapGet("/api/diagnose-hana", async () =>
+{
+    var results = await DiagnoseHanaFromApp();
+    return Results.Ok(results);
 });
 
 app.MapPost("/api/products", async (CreateProductDto dto) =>
@@ -78,97 +194,133 @@ app.MapDelete("/api/products/{id}", async (int id) =>
 app.Run();
 
 // Helper: try to read HANA credentials and query Products table via ODBC.
+// Helper: try to read HANA credentials and query Products table via HTTP REST.
 async Task<List<Product>?> GetProductsFromHana()
 {
     try
     {
-        // Build ODBC connection string from environment / VCAP
-        var explicitOdbc = Environment.GetEnvironmentVariable("HANA_CONNECTION");
-        string? odbcConnStr = null;
-
-        if (!string.IsNullOrWhiteSpace(explicitOdbc))
+        // Try to parse VCAP_SERVICES (Cloud Foundry) for HANA service
+        var vcap = Environment.GetEnvironmentVariable("VCAP_SERVICES");
+        if (string.IsNullOrWhiteSpace(vcap))
         {
-            odbcConnStr = explicitOdbc;
+            Console.Error.WriteLine("VCAP_SERVICES not found");
+            return null;
         }
-        else
-        {
-            // Individual env vars
-            var host = Environment.GetEnvironmentVariable("HANA_HOST");
-            var port = Environment.GetEnvironmentVariable("HANA_PORT");
-            var user = Environment.GetEnvironmentVariable("HANA_USER");
-            var pwd = Environment.GetEnvironmentVariable("HANA_PASSWORD");
 
-            if (!string.IsNullOrWhiteSpace(host) && !string.IsNullOrWhiteSpace(user) && !string.IsNullOrWhiteSpace(pwd))
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(vcap);
+            
+            // Look for HANA service binding
+            foreach (var prop in doc.RootElement.EnumerateObject())
             {
-                var server = host + (string.IsNullOrWhiteSpace(port) ? string.Empty : ":" + port);
-                odbcConnStr = $"Driver={{HDBODBC}};ServerNode={server};UID={user};PWD={pwd};";
-            }
-            else
-            {
-                // Try to parse VCAP_SERVICES (Cloud Foundry)
-                var vcap = Environment.GetEnvironmentVariable("VCAP_SERVICES");
-                if (!string.IsNullOrWhiteSpace(vcap))
+                // Check if this is a HANA service
+                if (!prop.Name.Contains("hana", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                
+                if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Array) 
+                    continue;
+
+                foreach (var item in prop.Value.EnumerateArray())
                 {
+                    if (!item.TryGetProperty("credentials", out var creds)) 
+                        continue;
+
+                    // Extract HANA connection info from credentials
+                    string? host = null, port = null, user = null, pwd = null, schema = null;
+                    
+                    if (creds.TryGetProperty("host", out var je)) host = je.GetString();
+                    if (creds.TryGetProperty("port", out je)) port = je.GetRawText().Trim('\"');
+                    if (creds.TryGetProperty("user", out je)) user = je.GetString();
+                    if (creds.TryGetProperty("password", out je)) pwd = je.GetString();
+                    if (creds.TryGetProperty("schema", out je)) schema = je.GetString();
+
+                    if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(pwd))
+                        continue;
+
+                    // Use HANA's SQL REST API endpoint
+                    // Format: https://host:port/sap/hana/query?command=SELECT...
+                    var baseUrl = $"https://{host}:{port ?? "443"}";
+                    var sqlQuery = "SELECT \"ID\",\"name\",\"price\",\"createdAt\" FROM \"Products\" ORDER BY \"ID\"";
+
+                    Console.Error.WriteLine($"Attempting HANA REST connection to {host} with user {user}");
+
                     try
                     {
-                        using var doc = System.Text.Json.JsonDocument.Parse(vcap);
-                        foreach (var prop in doc.RootElement.EnumerateObject())
+                        using var httpClient = new HttpClientHandler();
+                        // Trust self-signed certs (HANA Cloud uses these)
+                        httpClient.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => true;
+                        
+                        using var client = new HttpClient(httpClient);
+                        
+                        // Set basic auth header
+                        var credentials = Convert.ToBase64String(System.Text.Encoding.ASCII.GetBytes($"{user}:{pwd}"));
+                        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
+                        
+                        // Try HDB SQL REST API endpoint
+                        var restUrl = $"{baseUrl}/sap/hana/exec/query";
+                        var requestBody = new { sql = sqlQuery, limit = 10000 };
+                        var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
+                        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                        
+                        var response = await client.PostAsync(restUrl, content);
+                        
+                        if (response.IsSuccessStatusCode)
                         {
-                            if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
-                            foreach (var item in prop.Value.EnumerateArray())
+                            var responseContent = await response.Content.ReadAsStringAsync();
+                            Console.Error.WriteLine($"HANA REST response: {responseContent.Substring(0, Math.Min(200, responseContent.Length))}");
+                            
+                            // Parse results
+                            var list = new List<Product>();
+                            using var resultDoc = System.Text.Json.JsonDocument.Parse(responseContent);
+                            
+                            if (resultDoc.RootElement.TryGetProperty("result", out var resultProp) || 
+                                resultDoc.RootElement.TryGetProperty("Results", out resultProp))
                             {
-                                if (!item.TryGetProperty("credentials", out var creds)) continue;
-                                string? h = null, p = null, u = null, pw = null;
-                                if (creds.TryGetProperty("host", out var je)) h = je.GetString();
-                                if (creds.TryGetProperty("hostname", out je) && string.IsNullOrWhiteSpace(h)) h = je.GetString();
-                                if (creds.TryGetProperty("port", out je)) p = je.GetRawText().Trim('\"');
-                                if (creds.TryGetProperty("user", out je)) u = je.GetString();
-                                if (creds.TryGetProperty("username", out je) && string.IsNullOrWhiteSpace(u)) u = je.GetString();
-                                if (creds.TryGetProperty("password", out je)) pw = je.GetString();
-
-                                if (!string.IsNullOrWhiteSpace(h) && !string.IsNullOrWhiteSpace(u) && !string.IsNullOrWhiteSpace(pw))
+                                if (resultProp.ValueKind == System.Text.Json.JsonValueKind.Array)
                                 {
-                                    var server = h + (string.IsNullOrWhiteSpace(p) ? string.Empty : ":" + p);
-                                    odbcConnStr = $"Driver={{HDBODBC}};ServerNode={server};UID={u};PWD={pw};";
-                                    break;
+                                    foreach (var row in resultProp.EnumerateArray())
+                                    {
+                                        if (row.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
+                                        var values = row.EnumerateArray().ToList();
+                                        if (values.Count >= 4)
+                                        {
+                                            var id = values[0].TryGetInt32(out var idVal) ? idVal : 0;
+                                            var name = values[1].ValueKind == System.Text.Json.JsonValueKind.String ? values[1].GetString() ?? "" : "";
+                                            var price = values[2].TryGetDecimal(out var priceVal) ? priceVal : 0m;
+                                            var createdAt = values[3].ValueKind == System.Text.Json.JsonValueKind.String ? DateTime.Parse(values[3].GetString() ?? DateTime.UtcNow.ToString()) : DateTime.UtcNow;
+                                            
+                                            list.Add(new Product(id, name, price, createdAt));
+                                        }
+                                    }
                                 }
                             }
-                            if (odbcConnStr != null) break;
+                            
+                            if (list.Count > 0)
+                            {
+                                Console.Error.WriteLine($"Retrieved {list.Count} products from HANA via REST");
+                                return list;
+                            }
                         }
+                        else
+                        {
+                            var body = await response.Content.ReadAsStringAsync();
+                            // Log status + body for debugging
+                            Console.Error.WriteLine($"HANA REST API failed with status {(int)response.StatusCode} {response.ReasonPhrase}. Response body: {body.Substring(0, Math.Min(1000, body.Length))}");
+                        }
+                        
                     }
-                    catch (Exception ex)
+                    catch (HttpRequestException ex)
                     {
-                        Console.Error.WriteLine("Failed to parse VCAP_SERVICES: " + ex.Message);
+                        // Log full exception including stack trace for diagnosis
+                        Console.Error.WriteLine($"HANA REST API connection failed: {ex}");
                     }
                 }
             }
         }
-
-        // Use ODBC to connect to HANA
-        if (!string.IsNullOrWhiteSpace(odbcConnStr))
+        catch (Exception ex)
         {
-            try
-            {
-                using var conn = new OdbcConnection(odbcConnStr);
-                await conn.OpenAsync();
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT \"ID\",\"name\",\"price\",\"createdAt\" FROM \"Products\" ORDER BY \"ID\"";
-                var list = new List<Product>();
-                using var reader = await cmd.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
-                {
-                    var id = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
-                    var name = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
-                    var price = reader.IsDBNull(2) ? 0m : reader.GetDecimal(2);
-                    var createdAt = reader.IsDBNull(3) ? DateTime.UtcNow : reader.GetDateTime(3);
-                    list.Add(new Product(id, name, price, createdAt));
-                }
-                return list;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("ODBC provider failed: " + ex.Message);
-            }
+            Console.Error.WriteLine($"Failed to parse VCAP_SERVICES: {ex.Message}");
         }
 
         // Nothing worked, return null (caller will fallback to mock)
@@ -176,7 +328,7 @@ async Task<List<Product>?> GetProductsFromHana()
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine("GetProductsFromHana unexpected error: " + ex.Message);
+        Console.Error.WriteLine($"GetProductsFromHana unexpected error: {ex.Message}");
         return null;
     }
 }
