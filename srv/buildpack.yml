@@ -1,4 +1,6 @@
 ---
-# Pin .NET SDK/runtime version for the CF .NET buildpack
+# Pin the runtime that CF should install during staging. Without this the
+# buildpack may try an unavailable or unsupported version and finalization fails.
 dotnet-core:
-  sdk: 8.0
+  sdk: 8.0.408
+  runtime: 8.0.15
