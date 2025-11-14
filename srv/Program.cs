@@ -74,7 +74,7 @@ app.MapDelete("/api/products/{id}", (int id) =>
     return Results.Ok();
 });
 
-// Simple diagnostic endpoint
+// Diagnostic endpoint
 app.MapGet("/api/diagnose-hana", async () =>
 {
     var vcap = Environment.GetEnvironmentVariable("VCAP_SERVICES");
@@ -91,7 +91,7 @@ app.MapGet("/api/diagnose-hana", async () =>
 app.Run();
 
 
-// --------- LOCAL FUNCTION: HANA ACCESS ----------
+// --------- LOCAL FUNCTION: HANA ACCESS (Core v2.1) ----------
 
 async Task<List<Product>?> GetProductsFromHana()
 {
@@ -163,96 +163,55 @@ async Task<List<Product>?> GetProductsFromHana()
                     portStr = "443";
 
                 portStr = portStr.Trim('"');
-                var hostPort = $"{host}:{portStr}";
 
-                // Build several possible connection string variants – we don't know
-                // exactly which keyword set this Sap.Data.Hana.Net.v8.0 build prefers,
-                // so we try a few canonical ones.
-                var schemaSuffix = string.IsNullOrWhiteSpace(schema)
-                    ? ""
-                    : $"CurrentSchema={schema};";
-
-                var variants = new List<string>
+                // Build connection string with HanaConnectionStringBuilder (Core v2.1)
+                var csb = new HanaConnectionStringBuilder
                 {
-                    // Variant 1 – typical ADO.NET (Server + UserID/Password)
-                    $"Server={hostPort};UserID={user};Password={pwd};Encrypt=True;ValidateCertificate=False;{schemaSuffix}",
-
-                    // Variant 2 – ADO.NET with UID/PWD + lowercase encrypt properties
-                    $"Server={hostPort};UID={user};PWD={pwd};encrypt=true;sslValidateCertificate=false;{schemaSuffix}",
-
-                    // Variant 3 – 'serverNode' keyword as documented in HANA client ref
-                    $"serverNode={hostPort};UID={user};PWD={pwd};encrypt=true;sslValidateCertificate=false;{schemaSuffix}",
-
-                    // Variant 4 – Server + separate Port + UserID/Password
-                    $"Server={host};Port={portStr};UserID={user};Password={pwd};Encrypt=True;ValidateCertificate=False;{schemaSuffix}",
-
-                    // Variant 5 – Server + separate Port + UID/PWD
-                    $"Server={host};Port={portStr};UID={user};PWD={pwd};encrypt=true;sslValidateCertificate=false;{schemaSuffix}"
+                    Server  = $"{host}:{portStr}",
+                    UserID  = user,
+                    Password = pwd
                 };
 
-                Exception? lastEx = null;
+                // optional extras
+                csb["Encrypt"] = "true";
+                csb["ValidateCertificate"] = "false";
+                if (!string.IsNullOrWhiteSpace(schema))
+                    csb.CurrentSchema = schema;
 
-                foreach (var cs in variants)
+                var connStr = csb.ConnectionString;
+
+                var safeConnStr = string.IsNullOrEmpty(pwd)
+                    ? connStr
+                    : connStr.Replace(pwd, "***");
+
+                Console.Error.WriteLine($"[HANA] Using connection string: {safeConnStr}");
+
+                var products = new List<Product>();
+
+                using (var conn = new HanaConnection(connStr))
                 {
-                    if (string.IsNullOrWhiteSpace(cs))
-                        continue;
+                    await conn.OpenAsync();
 
-                    var safe = cs;
-                    if (!string.IsNullOrEmpty(pwd))
-                        safe = safe.Replace(pwd, "***");
+                    const string sql =
+                        "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
+                        "FROM \"Products\" ORDER BY \"ID\"";
 
-                    try
+                    using var cmd = new HanaCommand(sql, conn);
+                    using var reader = await cmd.ExecuteReaderAsync();
+
+                    while (await reader.ReadAsync())
                     {
-                        Console.Error.WriteLine($"[HANA] Trying connection string variant: {safe}");
+                        var id        = reader.GetInt32(0);
+                        var name      = reader.GetString(1);
+                        var price     = reader.GetDecimal(2);
+                        var createdAt = reader.GetDateTime(3);
 
-                        using var conn = new HanaConnection(cs);
-                        await conn.OpenAsync();
-
-                        const string sql =
-                            "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
-                            "FROM \"Products\" ORDER BY \"ID\"";
-
-                        var products = new List<Product>();
-
-                        using var cmd = new HanaCommand(sql, conn);
-                        using var reader = await cmd.ExecuteReaderAsync();
-
-                        while (await reader.ReadAsync())
-                        {
-                            var id        = reader.GetInt32(0);
-                            var name      = reader.GetString(1);
-                            var price     = reader.GetDecimal(2);
-                            var createdAt = reader.GetDateTime(3);
-
-                            products.Add(new Product(id, name, price, createdAt));
-                        }
-
-                        Console.Error.WriteLine($"[HANA] Variant succeeded, retrieved {products.Count} products.");
-                        return products;
-                    }
-                    catch (ArgumentException ex)
-                    {
-                        // This is the "Invalid connection string" / unsupported-keyword case: try next variant
-                        Console.Error.WriteLine($"[HANA] Variant failed with ArgumentException: {ex.Message}");
-                        lastEx = ex;
-                        continue;
-                    }
-                    catch (Exception ex)
-                    {
-                        // Non-syntax error (network/auth/etc.) – further variants won't help much
-                        Console.Error.WriteLine($"[HANA] Variant failed with non-ArgumentException: {ex}");
-                        lastEx = ex;
-                        break;
+                        products.Add(new Product(id, name, price, createdAt));
                     }
                 }
 
-                if (lastEx != null)
-                {
-                    Console.Error.WriteLine($"[HANA] All connection string variants failed. Last error: {lastEx.Message}");
-                }
-
-                // We tried all variants for this binding -> give up, fall back to mock
-                return null;
+                Console.Error.WriteLine($"[HANA] Retrieved {products.Count} products from HANA.");
+                return products;
             }
         }
 

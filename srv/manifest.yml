@@ -5,8 +5,7 @@ applications:
     env:
       ASPNETCORE_URLS: "http://0.0.0.0:${PORT}"      
       # HANA client location for .NET Core provider
-      HDB_CLIENT_HOME: "/home/vcap/app/hdbclient-linux"
-      HDBDOTNETCORE: "/home/vcap/app/hdbclient-linux/dotnetcore"
-      LD_LIBRARY_PATH: "/home/vcap/app/hdbclient-linux:${LD_LIBRARY_PATH}"
+      HDBDOTNETCORE: "/home/vcap/app/hana-client/dotnetcore/v2.1"
+      LD_LIBRARY_PATH: "/home/vcap/app/hana-client/dotnetcore:${LD_LIBRARY_PATH}"
 services:
       - hdi_dotnet     
