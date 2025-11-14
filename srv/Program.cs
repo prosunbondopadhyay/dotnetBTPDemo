@@ -175,8 +175,8 @@ async Task<List<Product>?> GetProductsFromHana()
                     await conn.OpenAsync();
 
                     const string sql =
-                        "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
-                        "FROM \"Products\" ORDER BY \"ID\"";
+                        "SELECT \"ID\",\"NAME\",\"PRICE\",\"CREATEDAT\" " +
+                        "FROM \"PRODUCTS\" ORDER BY \"ID\"";
 
                     using var cmd = new HanaCommand(sql, conn);
                     using var reader = await cmd.ExecuteReaderAsync();
