@@ -3,6 +3,10 @@ applications:
     memory: 512M
     disk_quota: 1024M
     env:
-      ASPNETCORE_URLS: "http://0.0.0.0:${PORT}"
+      ASPNETCORE_URLS: "http://0.0.0.0:${PORT}"      
+      # HANA client location for .NET Core provider
+      HDB_CLIENT_HOME: "/home/vcap/app/hdbclient-linux"
+      HDBDOTNETCORE: "/home/vcap/app/hdbclient-linux/dotnetcore"
+      LD_LIBRARY_PATH: "/home/vcap/app/hdbclient-linux:${LD_LIBRARY_PATH}"
 services:
       - hdi_dotnet     

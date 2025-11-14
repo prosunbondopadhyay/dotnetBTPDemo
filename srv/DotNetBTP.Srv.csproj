@@ -1,14 +1,26 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-  <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
     <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
+
   <ItemGroup>
-    <!-- Note: HANA integration uses System.Net.Http for direct REST queries or NGSA for queries -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
-    <PackageReference Include="System.Data.Odbc" Version="8.0.0" />
+    <!-- You can remove System.Data.Odbc if you’re no longer using ODBC -->
+    <!-- <PackageReference Include="System.Data.Odbc" Version="8.0.0" /> -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Reference the HANA .NET 8 provider that is actually present under srv/hdbclient-linux -->
+    <Reference Include="Sap.Data.Hana.Net.v8.0">
+      <HintPath>hdbclient-linux/dotnetcore/v8.0/Sap.Data.Hana.Net.v8.0.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+
+    <!-- Ship all HANA client files with the app -->
+    <None Include="hdbclient-linux/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

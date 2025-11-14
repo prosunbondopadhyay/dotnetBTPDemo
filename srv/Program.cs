@@ -1,7 +1,8 @@
 ﻿using System.Text.Json;
-using System.Data.Odbc;
 using System.Text;
 using System.Text.Json.Nodes;
+using Sap.Data.Hana;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -195,6 +196,8 @@ app.Run();
 
 // Helper: try to read HANA credentials and query Products table via ODBC.
 // Helper: try to read HANA credentials and query Products table via HTTP REST.
+
+
 async Task<List<Product>?> GetProductsFromHana()
 {
     try
@@ -208,7 +211,6 @@ async Task<List<Product>?> GetProductsFromHana()
 
         using var doc = JsonDocument.Parse(vcap);
 
-        // Look for any service group whose key contains "hana"
         foreach (var group in doc.RootElement.EnumerateObject())
         {
             if (!group.Name.Contains("hana", StringComparison.OrdinalIgnoreCase))
@@ -221,49 +223,39 @@ async Task<List<Product>?> GetProductsFromHana()
                 if (!item.TryGetProperty("credentials", out var creds))
                     continue;
 
-                string? host = null, port = null, user = null, pwd = null;
+                string? host = null, port = null, user = null, pwd = null, schema = null;
+
                 if (creds.TryGetProperty("host", out var je)) host = je.GetString();
-                if (creds.TryGetProperty("port", out je))  port = je.ValueKind == JsonValueKind.Number
-                                                                ? je.GetRawText()
-                                                                : je.GetString();
+                if (creds.TryGetProperty("port", out je)) port = je.GetRawText().Trim('"');
                 if (creds.TryGetProperty("user", out je)) user = je.GetString();
                 if (creds.TryGetProperty("password", out je)) pwd = je.GetString();
+                if (creds.TryGetProperty("schema", out je)) schema = je.GetString();
 
                 if (string.IsNullOrWhiteSpace(host) ||
                     string.IsNullOrWhiteSpace(user) ||
                     string.IsNullOrWhiteSpace(pwd))
                     continue;
 
-                var serverNode = string.IsNullOrWhiteSpace(port)
-                    ? $"{host}:443"
-                    : $"{host}:{port!.Trim('\"')}";
+                var server = $"{host}:{(string.IsNullOrEmpty(port) ? "443" : port)}";
 
-                // Build HANA ODBC connection string
-                var csb = new OdbcConnectionStringBuilder
-                {
-                    ["Driver"] = "HDBODBC",        // on Linux HANA client, usually HDBODBC
-                    ["ServerNode"] = serverNode,
-                    ["UID"] = user,
-                    ["PWD"] = pwd,
-                    // Optional: if you run into TLS issues, you can experiment with:
-                    // ["Encrypt"] = "true",
-                    // ["ValidateCertificate"] = "false"
-                };
+                // Basic HANA connection string
+                var connStr =
+                    $"Server={server};UserID={user};Password={pwd};" +
+                    "Encrypt=True;ValidateCertificate=False;" +
+                    (string.IsNullOrWhiteSpace(schema) ? "" : $"CurrentSchema={schema};");
 
-                var connStr = csb.ConnectionString;
-                Console.Error.WriteLine($"Connecting to HANA via ODBC at {serverNode} as {user}");
+                Console.Error.WriteLine($"Connecting to HANA via Sap.Data.Hana.Core at {server} as {user}");
 
                 var products = new List<Product>();
 
-                using (var conn = new OdbcConnection(connStr))
+                using (var conn = new HanaConnection(connStr))
                 {
                     await conn.OpenAsync();
 
                     const string sql =
-                        "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
-                        "FROM \"Products\" ORDER BY \"ID\"";
+                        "SELECT \"ID\",\"name\",\"price\",\"createdAt\" FROM \"Products\" ORDER BY \"ID\"";
 
-                    using var cmd = new OdbcCommand(sql, conn);
+                    using var cmd = new HanaCommand(sql, conn);
                     using var reader = await cmd.ExecuteReaderAsync();
 
                     while (await reader.ReadAsync())
@@ -277,15 +269,10 @@ async Task<List<Product>?> GetProductsFromHana()
                     }
                 }
 
-                if (products.Count > 0)
-                {
-                    Console.Error.WriteLine($"Retrieved {products.Count} products from HANA via ODBC");
-                    return products;
-                }
+                return products;
             }
         }
 
-        // No usable HANA binding found
         return null;
     }
     catch (Exception ex)
@@ -294,6 +281,7 @@ async Task<List<Product>?> GetProductsFromHana()
         return null;
     }
 }
+
 
 
 public record Product(int Id, string Name, decimal Price, DateTime CreatedAt);
