@@ -8,7 +8,7 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Bind to CF port if provided (Cloud Foundry)
+// Bind to CF port if provided
 var port = Environment.GetEnvironmentVariable("PORT");
 if (!string.IsNullOrWhiteSpace(port))
 {
@@ -90,6 +90,7 @@ app.MapGet("/api/diagnose-hana", async () =>
 
 app.Run();
 
+
 // --------- LOCAL FUNCTION: HANA ACCESS ----------
 
 async Task<List<Product>?> GetProductsFromHana()
@@ -129,7 +130,9 @@ async Task<List<Product>?> GetProductsFromHana()
                     host = je.GetString();
 
                 if (creds.TryGetProperty("port", out je))
-                    portStr = je.ValueKind == JsonValueKind.String ? je.GetString() : je.GetRawText();
+                    portStr = je.ValueKind == JsonValueKind.String
+                        ? je.GetString()
+                        : je.GetRawText();
 
                 if (creds.TryGetProperty("user", out je))
                     user = je.GetString();
@@ -160,48 +163,96 @@ async Task<List<Product>?> GetProductsFromHana()
                     portStr = "443";
 
                 portStr = portStr.Trim('"');
-                var server = $"{host}:{portStr}";
+                var hostPort = $"{host}:{portStr}";
 
-                // IMPORTANT: ADO.NET provider expects Server + UserID + Password
-                var connStr =
-                    $"Server={server};" +
-                    $"UserID={user};" +
-                    $"Password={pwd};" +
-                    "Encrypt=True;ValidateCertificate=False;";
+                // Build several possible connection string variants – we don't know
+                // exactly which keyword set this Sap.Data.Hana.Net.v8.0 build prefers,
+                // so we try a few canonical ones.
+                var schemaSuffix = string.IsNullOrWhiteSpace(schema)
+                    ? ""
+                    : $"CurrentSchema={schema};";
 
-                if (!string.IsNullOrWhiteSpace(schema))
-                    connStr += $"CurrentSchema={schema};";
-
-                // Log sanitized connection string
-                var safeConnStr = connStr.Replace(pwd, "***");
-                Console.Error.WriteLine($"[HANA] Using connection string: {safeConnStr}");
-
-                var products = new List<Product>();
-
-                using (var conn = new HanaConnection(connStr))
+                var variants = new List<string>
                 {
-                    await conn.OpenAsync();
+                    // Variant 1 – typical ADO.NET (Server + UserID/Password)
+                    $"Server={hostPort};UserID={user};Password={pwd};Encrypt=True;ValidateCertificate=False;{schemaSuffix}",
 
-                    const string sql =
-                        "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
-                        "FROM \"Products\" ORDER BY \"ID\"";
+                    // Variant 2 – ADO.NET with UID/PWD + lowercase encrypt properties
+                    $"Server={hostPort};UID={user};PWD={pwd};encrypt=true;sslValidateCertificate=false;{schemaSuffix}",
 
-                    using var cmd = new HanaCommand(sql, conn);
-                    using var reader = await cmd.ExecuteReaderAsync();
+                    // Variant 3 – 'serverNode' keyword as documented in HANA client ref
+                    $"serverNode={hostPort};UID={user};PWD={pwd};encrypt=true;sslValidateCertificate=false;{schemaSuffix}",
 
-                    while (await reader.ReadAsync())
+                    // Variant 4 – Server + separate Port + UserID/Password
+                    $"Server={host};Port={portStr};UserID={user};Password={pwd};Encrypt=True;ValidateCertificate=False;{schemaSuffix}",
+
+                    // Variant 5 – Server + separate Port + UID/PWD
+                    $"Server={host};Port={portStr};UID={user};PWD={pwd};encrypt=true;sslValidateCertificate=false;{schemaSuffix}"
+                };
+
+                Exception? lastEx = null;
+
+                foreach (var cs in variants)
+                {
+                    if (string.IsNullOrWhiteSpace(cs))
+                        continue;
+
+                    var safe = cs;
+                    if (!string.IsNullOrEmpty(pwd))
+                        safe = safe.Replace(pwd, "***");
+
+                    try
                     {
-                        var id        = reader.GetInt32(0);
-                        var name      = reader.GetString(1);
-                        var price     = reader.GetDecimal(2);
-                        var createdAt = reader.GetDateTime(3);
+                        Console.Error.WriteLine($"[HANA] Trying connection string variant: {safe}");
 
-                        products.Add(new Product(id, name, price, createdAt));
+                        using var conn = new HanaConnection(cs);
+                        await conn.OpenAsync();
+
+                        const string sql =
+                            "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
+                            "FROM \"Products\" ORDER BY \"ID\"";
+
+                        var products = new List<Product>();
+
+                        using var cmd = new HanaCommand(sql, conn);
+                        using var reader = await cmd.ExecuteReaderAsync();
+
+                        while (await reader.ReadAsync())
+                        {
+                            var id        = reader.GetInt32(0);
+                            var name      = reader.GetString(1);
+                            var price     = reader.GetDecimal(2);
+                            var createdAt = reader.GetDateTime(3);
+
+                            products.Add(new Product(id, name, price, createdAt));
+                        }
+
+                        Console.Error.WriteLine($"[HANA] Variant succeeded, retrieved {products.Count} products.");
+                        return products;
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        // This is the "Invalid connection string" / unsupported-keyword case: try next variant
+                        Console.Error.WriteLine($"[HANA] Variant failed with ArgumentException: {ex.Message}");
+                        lastEx = ex;
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        // Non-syntax error (network/auth/etc.) – further variants won't help much
+                        Console.Error.WriteLine($"[HANA] Variant failed with non-ArgumentException: {ex}");
+                        lastEx = ex;
+                        break;
                     }
                 }
 
-                Console.Error.WriteLine($"[HANA] Retrieved {products.Count} products from HANA.");
-                return products;
+                if (lastEx != null)
+                {
+                    Console.Error.WriteLine($"[HANA] All connection string variants failed. Last error: {lastEx.Message}");
+                }
+
+                // We tried all variants for this binding -> give up, fall back to mock
+                return null;
             }
         }
 
@@ -215,7 +266,7 @@ async Task<List<Product>?> GetProductsFromHana()
     }
 }
 
-// --------- RECORD TYPES (AT THE BOTTOM – NO CS8803) ----------
+// --------- RECORD TYPES (AT THE BOTTOM) ----------
 
 public record Product(int Id, string Name, decimal Price, DateTime CreatedAt);
 public record CreateProductDto(string Name, decimal Price);
