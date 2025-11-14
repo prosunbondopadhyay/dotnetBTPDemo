@@ -1,5 +1,6 @@
-﻿using Sap.Data.Hana;
-using System.Text.Json;
+﻿using System.Text.Json;
+using System.Text.RegularExpressions;
+using Sap.Data.Hana;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,16 +10,18 @@ builder.Services.AddSwaggerGen();
 var app = builder.Build();
 
 // Bind to CF port if provided
-var port = Environment.GetEnvironmentVariable("PORT");
-if (!string.IsNullOrWhiteSpace(port))
+var cfPort = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(cfPort))
 {
-    app.Urls.Add($"http://0.0.0.0:{port}");
+    app.Urls.Add($"http://0.0.0.0:{cfPort}");
 }
 
 app.UseSwagger();
 app.UseSwaggerUI();
 
-// Mock products data (used as fallback when HANA is not reachable)
+// ----------------------------------------------------------------------
+// Mock products (fallback if HANA connection fails)
+// ----------------------------------------------------------------------
 var mockProducts = new List<Product>
 {
     new(1, "Laptop",   999.99m, DateTime.UtcNow.AddDays(-30)),
@@ -27,9 +30,10 @@ var mockProducts = new List<Product>
 };
 
 app.MapGet("/api/health", () =>
-    Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+{
+    return Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow });
+});
 
-// Try to fetch products from HANA; fall back to mock data
 app.MapGet("/api/products", async () =>
 {
     var hanaProducts = await GetProductsFromHana();
@@ -41,6 +45,7 @@ app.MapGet("/api/products/{id}", async (int id) =>
 {
     var hanaProducts = await GetProductsFromHana();
     var source = hanaProducts ?? mockProducts;
+
     var product = source.FirstOrDefault(p => p.Id == id);
     return product is not null ? Results.Ok(product) : Results.NotFound();
 });
@@ -48,50 +53,37 @@ app.MapGet("/api/products/{id}", async (int id) =>
 app.MapPost("/api/products", (CreateProductDto dto) =>
 {
     var id = mockProducts.Max(p => p.Id) + 1;
-    var newProduct = new Product(id, dto.Name, dto.Price, DateTime.UtcNow);
-    mockProducts.Add(newProduct);
-    return Results.Created($"/api/products/{newProduct.Id}", newProduct);
+    var product = new Product(id, dto.Name, dto.Price, DateTime.UtcNow);
+    mockProducts.Add(product);
+    return Results.Created($"/api/products/{product.Id}", product);
 });
 
 app.MapPut("/api/products/{id}", (int id, UpdateProductDto dto) =>
 {
-    var product = mockProducts.FirstOrDefault(p => p.Id == id);
-    if (product is null)
+    var existing = mockProducts.FirstOrDefault(p => p.Id == id);
+    if (existing is null)
         return Results.NotFound();
 
-    var index = mockProducts.IndexOf(product);
-    mockProducts[index] = product with { Name = dto.Name, Price = dto.Price };
+    var index = mockProducts.IndexOf(existing);
+    mockProducts[index] = existing with { Name = dto.Name, Price = dto.Price };
     return Results.Ok(mockProducts[index]);
 });
 
 app.MapDelete("/api/products/{id}", (int id) =>
 {
-    var product = mockProducts.FirstOrDefault(p => p.Id == id);
-    if (product is null)
+    var existing = mockProducts.FirstOrDefault(p => p.Id == id);
+    if (existing is null)
         return Results.NotFound();
 
-    mockProducts.Remove(product);
+    mockProducts.Remove(existing);
     return Results.Ok();
-});
-
-// Diagnostic endpoint
-app.MapGet("/api/diagnose-hana", async () =>
-{
-    var vcap = Environment.GetEnvironmentVariable("VCAP_SERVICES");
-    var hanaProducts = await GetProductsFromHana();
-
-    return Results.Ok(new
-    {
-        vcapPresent = !string.IsNullOrWhiteSpace(vcap),
-        productsFromHana = hanaProducts?.Count ?? 0,
-        usedMock = hanaProducts is null
-    });
 });
 
 app.Run();
 
-
-// --------- LOCAL FUNCTION: HANA ACCESS (Core v2.1) ----------
+// ======================================================================
+// HANA helper
+// ======================================================================
 
 async Task<List<Product>?> GetProductsFromHana()
 {
@@ -106,7 +98,7 @@ async Task<List<Product>?> GetProductsFromHana()
 
         using var doc = JsonDocument.Parse(vcap);
 
-        // Look for any HANA-like service group (hana, hana-cloud, etc.)
+        // Look for any service group whose name contains "hana"
         foreach (var group in doc.RootElement.EnumerateObject())
         {
             if (!group.Name.Contains("hana", StringComparison.OrdinalIgnoreCase))
@@ -120,33 +112,21 @@ async Task<List<Product>?> GetProductsFromHana()
                 if (!item.TryGetProperty("credentials", out var creds))
                     continue;
 
-                string? host    = null;
-                string? portStr = null;
-                string? user    = null;
-                string? pwd     = null;
-                string? schema  = null;
+                string? host = null;
+                string? port = null;
+                string? user = null;
+                string? pwd  = null;
+                string? schema = null;
 
-                if (creds.TryGetProperty("host", out var je))
-                    host = je.GetString();
+                if (creds.TryGetProperty("host", out var je))   host   = je.GetString();
+                if (creds.TryGetProperty("port", out je))       port   = je.GetString() ?? je.GetRawText().Trim('"');
+                if (creds.TryGetProperty("user", out je))       user   = je.GetString();
+                if (creds.TryGetProperty("password", out je))   pwd    = je.GetString();
+                if (creds.TryGetProperty("schema", out je))     schema = je.GetString();
 
-                if (creds.TryGetProperty("port", out je))
-                    portStr = je.ValueKind == JsonValueKind.String
-                        ? je.GetString()
-                        : je.GetRawText();
-
-                if (creds.TryGetProperty("user", out je))
-                    user = je.GetString();
-
-                if (creds.TryGetProperty("password", out je))
-                    pwd = je.GetString();
-
-                if (creds.TryGetProperty("schema", out je))
-                    schema = je.GetString();
-
-                // HDI-style: sometimes user/pwd are under hdi_user / hdi_password
+                // HDI-style credentials sometimes use hdi_user / hdi_password
                 if (string.IsNullOrWhiteSpace(user) && creds.TryGetProperty("hdi_user", out je))
                     user = je.GetString();
-
                 if (string.IsNullOrWhiteSpace(pwd) && creds.TryGetProperty("hdi_password", out je))
                     pwd = je.GetString();
 
@@ -159,30 +139,32 @@ async Task<List<Product>?> GetProductsFromHana()
                     continue;
                 }
 
-                if (string.IsNullOrWhiteSpace(portStr))
-                    portStr = "443";
+                if (string.IsNullOrWhiteSpace(port))
+                    port = "443";
 
-                portStr = portStr.Trim('"');
+                var server = $"{host}:{port}";
 
-                // Build connection string with HanaConnectionStringBuilder (Core v2.1)
                 var csb = new HanaConnectionStringBuilder
                 {
-                    Server  = $"{host}:{portStr}",
+                    Server  = server,
                     UserID  = user,
                     Password = pwd
                 };
 
-                // optional extras
-                csb["Encrypt"] = "true";
-                csb["ValidateCertificate"] = "false";
                 if (!string.IsNullOrWhiteSpace(schema))
                     csb.CurrentSchema = schema;
 
+                // IMPORTANT: DO NOT add ValidateCertificate / ServerNode / Port here.
+                // This older driver only supports a limited set of keywords.
+
                 var connStr = csb.ConnectionString;
 
-                var safeConnStr = string.IsNullOrEmpty(pwd)
-                    ? connStr
-                    : connStr.Replace(pwd, "***");
+                // Mask password in logs
+                var safeConnStr = Regex.Replace(
+                    connStr,
+                    @"(Password|PWD)\s*=\s*[^;]*",
+                    "$1=***",
+                    RegexOptions.IgnoreCase);
 
                 Console.Error.WriteLine($"[HANA] Using connection string: {safeConnStr}");
 
@@ -215,7 +197,7 @@ async Task<List<Product>?> GetProductsFromHana()
             }
         }
 
-        Console.Error.WriteLine("[HANA] No HANA service with credentials found in VCAP_SERVICES.");
+        Console.Error.WriteLine("[HANA] No matching HANA service in VCAP_SERVICES.");
         return null;
     }
     catch (Exception ex)
@@ -225,7 +207,9 @@ async Task<List<Product>?> GetProductsFromHana()
     }
 }
 
-// --------- RECORD TYPES (AT THE BOTTOM) ----------
+// ======================================================================
+// DTOs / records
+// ======================================================================
 
 public record Product(int Id, string Name, decimal Price, DateTime CreatedAt);
 public record CreateProductDto(string Name, decimal Price);
