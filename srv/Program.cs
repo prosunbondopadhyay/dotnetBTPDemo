@@ -199,7 +199,6 @@ async Task<List<Product>?> GetProductsFromHana()
 {
     try
     {
-        // Try to parse VCAP_SERVICES (Cloud Foundry) for HANA service
         var vcap = Environment.GetEnvironmentVariable("VCAP_SERVICES");
         if (string.IsNullOrWhiteSpace(vcap))
         {
@@ -207,131 +206,95 @@ async Task<List<Product>?> GetProductsFromHana()
             return null;
         }
 
-        try
+        using var doc = JsonDocument.Parse(vcap);
+
+        // Look for any service group whose key contains "hana"
+        foreach (var group in doc.RootElement.EnumerateObject())
         {
-            using var doc = System.Text.Json.JsonDocument.Parse(vcap);
-            
-            // Look for HANA service binding
-            foreach (var prop in doc.RootElement.EnumerateObject())
+            if (!group.Name.Contains("hana", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (group.Value.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var item in group.Value.EnumerateArray())
             {
-                // Check if this is a HANA service
-                if (!prop.Name.Contains("hana", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                
-                if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Array) 
+                if (!item.TryGetProperty("credentials", out var creds))
                     continue;
 
-                foreach (var item in prop.Value.EnumerateArray())
+                string? host = null, port = null, user = null, pwd = null;
+                if (creds.TryGetProperty("host", out var je)) host = je.GetString();
+                if (creds.TryGetProperty("port", out je))  port = je.ValueKind == JsonValueKind.Number
+                                                                ? je.GetRawText()
+                                                                : je.GetString();
+                if (creds.TryGetProperty("user", out je)) user = je.GetString();
+                if (creds.TryGetProperty("password", out je)) pwd = je.GetString();
+
+                if (string.IsNullOrWhiteSpace(host) ||
+                    string.IsNullOrWhiteSpace(user) ||
+                    string.IsNullOrWhiteSpace(pwd))
+                    continue;
+
+                var serverNode = string.IsNullOrWhiteSpace(port)
+                    ? $"{host}:443"
+                    : $"{host}:{port!.Trim('\"')}";
+
+                // Build HANA ODBC connection string
+                var csb = new OdbcConnectionStringBuilder
                 {
-                    if (!item.TryGetProperty("credentials", out var creds)) 
-                        continue;
+                    ["Driver"] = "HDBODBC",        // on Linux HANA client, usually HDBODBC
+                    ["ServerNode"] = serverNode,
+                    ["UID"] = user,
+                    ["PWD"] = pwd,
+                    // Optional: if you run into TLS issues, you can experiment with:
+                    // ["Encrypt"] = "true",
+                    // ["ValidateCertificate"] = "false"
+                };
 
-                    // Extract HANA connection info from credentials
-                    string? host = null, port = null, user = null, pwd = null, schema = null;
-                    
-                    if (creds.TryGetProperty("host", out var je)) host = je.GetString();
-                    if (creds.TryGetProperty("port", out je)) port = je.GetRawText().Trim('\"');
-                    if (creds.TryGetProperty("user", out je)) user = je.GetString();
-                    if (creds.TryGetProperty("password", out je)) pwd = je.GetString();
-                    if (creds.TryGetProperty("schema", out je)) schema = je.GetString();
+                var connStr = csb.ConnectionString;
+                Console.Error.WriteLine($"Connecting to HANA via ODBC at {serverNode} as {user}");
 
-                    if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(pwd))
-                        continue;
+                var products = new List<Product>();
 
-                    // Use HANA's SQL REST API endpoint
-                    // Format: https://host:port/sap/hana/query?command=SELECT...
-                    var baseUrl = $"https://{host}:{port ?? "443"}";
-                    var sqlQuery = "SELECT \"ID\",\"name\",\"price\",\"createdAt\" FROM \"Products\" ORDER BY \"ID\"";
+                using (var conn = new OdbcConnection(connStr))
+                {
+                    await conn.OpenAsync();
 
-                    Console.Error.WriteLine($"Attempting HANA REST connection to {host} with user {user}");
+                    const string sql =
+                        "SELECT \"ID\",\"name\",\"price\",\"createdAt\" " +
+                        "FROM \"Products\" ORDER BY \"ID\"";
 
-                    try
+                    using var cmd = new OdbcCommand(sql, conn);
+                    using var reader = await cmd.ExecuteReaderAsync();
+
+                    while (await reader.ReadAsync())
                     {
-                        using var httpClient = new HttpClientHandler();
-                        // Trust self-signed certs (HANA Cloud uses these)
-                        httpClient.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => true;
-                        
-                        using var client = new HttpClient(httpClient);
-                        
-                        // Set basic auth header
-                        var credentials = Convert.ToBase64String(System.Text.Encoding.ASCII.GetBytes($"{user}:{pwd}"));
-                        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-                        
-                        // Try HDB SQL REST API endpoint
-                        var restUrl = $"{baseUrl}/sap/hana/exec/query";
-                        var requestBody = new { sql = sqlQuery, limit = 10000 };
-                        var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
-                        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-                        
-                        var response = await client.PostAsync(restUrl, content);
-                        
-                        if (response.IsSuccessStatusCode)
-                        {
-                            var responseContent = await response.Content.ReadAsStringAsync();
-                            Console.Error.WriteLine($"HANA REST response: {responseContent.Substring(0, Math.Min(200, responseContent.Length))}");
-                            
-                            // Parse results
-                            var list = new List<Product>();
-                            using var resultDoc = System.Text.Json.JsonDocument.Parse(responseContent);
-                            
-                            if (resultDoc.RootElement.TryGetProperty("result", out var resultProp) || 
-                                resultDoc.RootElement.TryGetProperty("Results", out resultProp))
-                            {
-                                if (resultProp.ValueKind == System.Text.Json.JsonValueKind.Array)
-                                {
-                                    foreach (var row in resultProp.EnumerateArray())
-                                    {
-                                        if (row.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
-                                        var values = row.EnumerateArray().ToList();
-                                        if (values.Count >= 4)
-                                        {
-                                            var id = values[0].TryGetInt32(out var idVal) ? idVal : 0;
-                                            var name = values[1].ValueKind == System.Text.Json.JsonValueKind.String ? values[1].GetString() ?? "" : "";
-                                            var price = values[2].TryGetDecimal(out var priceVal) ? priceVal : 0m;
-                                            var createdAt = values[3].ValueKind == System.Text.Json.JsonValueKind.String ? DateTime.Parse(values[3].GetString() ?? DateTime.UtcNow.ToString()) : DateTime.UtcNow;
-                                            
-                                            list.Add(new Product(id, name, price, createdAt));
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if (list.Count > 0)
-                            {
-                                Console.Error.WriteLine($"Retrieved {list.Count} products from HANA via REST");
-                                return list;
-                            }
-                        }
-                        else
-                        {
-                            var body = await response.Content.ReadAsStringAsync();
-                            // Log status + body for debugging
-                            Console.Error.WriteLine($"HANA REST API failed with status {(int)response.StatusCode} {response.ReasonPhrase}. Response body: {body.Substring(0, Math.Min(1000, body.Length))}");
-                        }
-                        
+                        var id        = reader.GetInt32(0);
+                        var name      = reader.GetString(1);
+                        var price     = reader.GetDecimal(2);
+                        var createdAt = reader.GetDateTime(3);
+
+                        products.Add(new Product(id, name, price, createdAt));
                     }
-                    catch (HttpRequestException ex)
-                    {
-                        // Log full exception including stack trace for diagnosis
-                        Console.Error.WriteLine($"HANA REST API connection failed: {ex}");
-                    }
+                }
+
+                if (products.Count > 0)
+                {
+                    Console.Error.WriteLine($"Retrieved {products.Count} products from HANA via ODBC");
+                    return products;
                 }
             }
         }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Failed to parse VCAP_SERVICES: {ex.Message}");
-        }
 
-        // Nothing worked, return null (caller will fallback to mock)
+        // No usable HANA binding found
         return null;
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"GetProductsFromHana unexpected error: {ex.Message}");
+        Console.Error.WriteLine($"GetProductsFromHana failed: {ex}");
         return null;
     }
 }
+
 
 public record Product(int Id, string Name, decimal Price, DateTime CreatedAt);
 public record CreateProductDto(string Name, decimal Price);

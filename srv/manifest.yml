@@ -4,3 +4,5 @@ applications:
     disk_quota: 1024M
     env:
       ASPNETCORE_URLS: "http://0.0.0.0:${PORT}"
+services:
+      - hdi_dotnet     
